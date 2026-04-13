@@ -1,0 +1,4 @@
+markitdown[pdf]
+pymupdf
+mistral-ocr-pdf
+python-dotenv

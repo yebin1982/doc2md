@@ -26,8 +26,8 @@ pip install markitdown mistralai pymupdf customtkinter
 
 1. Clone this repository:
    ```bash
-   git clone https://github.com/yebin1982/scripts.git
-   cd scripts
+   git clone https://github.com/yebin1982/doc2md.git
+   cd doc2md
    ```
 2. (Optional) Set up a virtual environment:
    ```bash
@@ -54,7 +54,7 @@ python doc_converter.py <path_to_file_or_directory>
 *Note: Ensure your Mistral API key is set in `doc_converter.py` or configured in your environment.*
 
 ### Portable Version (.exe)
-If you are on Windows, you can download the standalone `Doc2MD_Converter.exe` from the **[GitHub Releases](https://github.com/yebin1982/scripts/releases)** page. No Python installation required!
+If you are on Windows, you can download the standalone `Doc2MD_Converter.exe` from the **[GitHub Releases](https://github.com/yebin1982/doc2md/releases)** page. No Python installation required!
 
 ## ⚙️ Configuration
 

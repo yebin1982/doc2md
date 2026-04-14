@@ -127,14 +127,34 @@ class DocConverterApp(ctk.CTk):
         self.btn_dir = ctk.CTkButton(self.selection_frame, text="Add Folder", width=120, command=self.browse_folder)
         self.btn_dir.pack(side="left", padx=10, pady=10)
 
+        # ====== ADD PROGRESS BARS HERE ======
+        self.progress_frame = ctk.CTkFrame(self.main_frame, fg_color="transparent")
+        self.progress_frame.grid(row=2, column=0, padx=20, pady=5, sticky="ew")
+        
+        self.import_status_label = ctk.CTkLabel(self.progress_frame, text="Ready", anchor="w")
+        self.import_status_label.pack(fill="x", pady=(0, 2))
+        
+        self.import_progress = ctk.CTkProgressBar(self.progress_frame, mode="indeterminate", height=10)
+        self.import_progress.pack(fill="x", pady=(0, 10))
+        self.import_progress.set(0)
+        
+        self.process_status_label = ctk.CTkLabel(self.progress_frame, text="Processing: 0/0 (0%)", anchor="w")
+        self.process_status_label.pack(fill="x", pady=(0, 2))
+        
+        self.process_progress = ctk.CTkProgressBar(self.progress_frame, mode="determinate", height=10)
+        self.process_progress.pack(fill="x", pady=(0, 5))
+        self.process_progress.set(0)
+        # ====================================
+
         # Task List
         self.scrollable_frame = ctk.CTkScrollableFrame(self.main_frame, label_text="Conversion Queue")
-        self.scrollable_frame.grid(row=2, column=0, padx=20, pady=10, sticky="nsew")
+        self.scrollable_frame.grid(row=3, column=0, padx=20, pady=10, sticky="nsew")
+        self.main_frame.grid_rowconfigure(3, weight=1)
         self.scrollable_frame.grid_columnconfigure(0, weight=1)
 
         # Bulk Actions
         self.actions_frame = ctk.CTkFrame(self.main_frame, fg_color="transparent")
-        self.actions_frame.grid(row=3, column=0, padx=20, pady=10, sticky="ew")
+        self.actions_frame.grid(row=4, column=0, padx=20, pady=10, sticky="ew")
         
         self.retry_all_btn = ctk.CTkButton(self.actions_frame, text="Retry All Failed", command=self.task_manager.retry_all_failed, fg_color="#34495E")
         self.retry_all_btn.pack(side="left", padx=10)
@@ -158,31 +178,72 @@ class DocConverterApp(ctk.CTk):
         dirname = filedialog.askdirectory()
         if dirname:
             api_key = self.api_key_entry.get()
-            # Find all supported files
-            supported_extensions = {
-                ".pdf", ".docx", ".pptx", ".xlsx", ".html", ".htm",
-                ".txt", ".csv", ".tsv", ".json", ".xml", ".log",
-                ".png", ".jpg", ".jpeg", ".bmp", ".tiff", ".webp"
-            }
-            for f_path in Path(dirname).rglob("*"):
-                if f_path.is_file() and f_path.suffix.lower() in supported_extensions:
-                    self.task_manager.add_task(f_path, api_key)
+            self.import_status_label.configure(text=f"Scanning directory: {Path(dirname).name}...")
+            self.import_progress.start()
+            self.btn_file.configure(state="disabled")
+            self.btn_dir.configure(state="disabled")
+            
+            threading.Thread(target=self._scan_folder_thread, args=(dirname, api_key), daemon=True).start()
+
+    def _scan_folder_thread(self, dirname, api_key):
+        supported_extensions = {
+            ".pdf", ".docx", ".pptx", ".xlsx", ".html", ".htm",
+            ".txt", ".csv", ".tsv", ".json", ".xml", ".log",
+            ".png", ".jpg", ".jpeg", ".bmp", ".tiff", ".webp"
+        }
+        
+        count = 0
+        for f_path in Path(dirname).rglob("*"):
+            if f_path.is_file() and f_path.suffix.lower() in supported_extensions:
+                self.task_manager.add_task(f_path, api_key, import_root=dirname)
+                count += 1
+                if count % 100 == 0:
+                    self.after(0, lambda c=count: self.import_status_label.configure(text=f"Imported {c} files so far..."))
+        
+        self.after(0, lambda c=count: self._scan_folder_complete(c))
+
+    def _scan_folder_complete(self, count):
+        self.import_progress.stop()
+        self.import_progress.set(0)
+        self.import_status_label.configure(text=f"Ready. Imported {count} files.")
+        self.btn_file.configure(state="normal")
+        self.btn_dir.configure(state="normal")
 
     def refresh_task_list(self):
         # This is called from background thread, so use after()
         self.after(0, self._refresh_ui)
 
     def _refresh_ui(self):
-        # Remove successful from manager? user requested: "转换成功的文件名从列表中删除"
-        # We handle this by only displaying non-SUCCESS tasks, OR deleting from task_manager
-        # Actually, user says: "列表中仅保留失败的文件名" (implies success disappear).
+        # Update progress bars safely
+        total = self.task_manager.total_files
+        processed = self.task_manager.processed_files
+        success = self.task_manager.success_files
+        failed = self.task_manager.failed_files
         
-        # Filter out success from the manager's list (optional, but keep it for failed)
-        self.task_manager.tasks = [t for t in self.task_manager.tasks if t.status != TaskStatus.SUCCESS]
+        if total > 0:
+            percentage = (processed / total) * 100
+            self.process_status_label.configure(text=f"Processing: {processed}/{total} ({percentage:.1f}%) | Success: {success} | Failed: {failed}")
+            self.process_progress.set(processed / total)
+        else:
+            self.process_status_label.configure(text="Processing: 0/0 (0%)")
+            self.process_progress.set(0)
+
+        # Determine which tasks to render (max 50 to prevent UI locking)
+        visible_tasks = []
+        for t in self.task_manager.tasks:
+            # Always show failed, running, stopped, timeout
+            if t.status in [TaskStatus.RUNNING, TaskStatus.FAILED, TaskStatus.TIMEOUT, TaskStatus.STOPPED]:
+                visible_tasks.append(t)
+            # Show some pending tasks up to limit
+            elif t.status == TaskStatus.PENDING and len(visible_tasks) < 50:
+                visible_tasks.append(t)
+                
+            if len(visible_tasks) >= 50:
+                break
 
         # Sync widgets
         existing_ids = set(self.row_widgets.keys())
-        current_ids = {t.id for t in self.task_manager.tasks}
+        current_ids = {t.id for t in visible_tasks}
         
         # Remove old widgets
         for tid in existing_ids - current_ids:
@@ -190,7 +251,7 @@ class DocConverterApp(ctk.CTk):
             del self.row_widgets[tid]
             
         # Add or update widgets
-        for i, task in enumerate(self.task_manager.tasks):
+        for i, task in enumerate(visible_tasks):
             if task.id not in self.row_widgets:
                 row = TaskRow(self.scrollable_frame, task, self.task_manager.stop_task, self.task_manager.retry_task)
                 row.grid(row=i, column=0, padx=5, pady=2, sticky="ew")

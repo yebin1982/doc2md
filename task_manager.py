@@ -2,7 +2,7 @@ import threading
 import queue
 import time
 from pathlib import Path
-from doc_converter import process_file_logic, handle_failure, get_timeout_for_file
+from doc_converter import process_file_logic, handle_failure, handle_success, get_timeout_for_file
 
 class TaskStatus:
     PENDING = "Pending"
@@ -13,9 +13,10 @@ class TaskStatus:
     TIMEOUT = "Timeout"
 
 class ConversionTask:
-    def __init__(self, file_path, api_key):
+    def __init__(self, file_path, api_key, import_root=None):
         self.file_path = Path(file_path)
         self.api_key = api_key
+        self.import_root = Path(import_root) if import_root else self.file_path.parent
         self.status = TaskStatus.PENDING
         self.stop_event = threading.Event()
         self.error_message = ""
@@ -38,15 +39,24 @@ class TaskManager:
         self.active_count = 0
         self.lock = threading.Lock()
         self.stop_all_requested = False
+        
+        # Statistics for progress bars
+        self.total_files = 0
+        self.processed_files = 0
+        self.success_files = 0
+        self.failed_files = 0
 
-    def add_task(self, file_path, api_key):
+    def add_task(self, file_path, api_key, import_root=None):
         # Avoid duplicates in pending/running
         for task in self.tasks:
             if task.file_path == Path(file_path) and task.status in [TaskStatus.PENDING, TaskStatus.RUNNING]:
                 return None
         
-        task = ConversionTask(file_path, api_key)
-        self.tasks.append(task)
+        task = ConversionTask(file_path, api_key, import_root=import_root)
+        with self.lock:
+            self.tasks.append(task)
+            self.total_files += 1
+            
         self.queue.put(task)
         self._trigger_workers()
         if self.update_callback:
@@ -87,14 +97,24 @@ class TaskManager:
             elif success:
                 task.status = TaskStatus.SUCCESS
                 task.result_path = result
+                handle_success(task.file_path, base_dir=task.import_root)
+                with self.lock:
+                    self.success_files += 1
+                    self.processed_files += 1
             else:
                 task.status = TaskStatus.FAILED
                 task.error_message = result
-                handle_failure(task.file_path)
+                handle_failure(task.file_path, base_dir=task.import_root)
+                with self.lock:
+                    self.failed_files += 1
+                    self.processed_files += 1
         except Exception as e:
             task.status = TaskStatus.FAILED
             task.error_message = str(e)
-            handle_failure(task.file_path)
+            handle_failure(task.file_path, base_dir=task.import_root)
+            with self.lock:
+                self.failed_files += 1
+                self.processed_files += 1
         finally:
             with self.lock:
                 self.active_count -= 1
@@ -108,6 +128,10 @@ class TaskManager:
         for task in self.tasks:
             if task.id == task_id:
                 if task.status in [TaskStatus.FAILED, TaskStatus.STOPPED, TaskStatus.TIMEOUT]:
+                    with self.lock:
+                        if task.status == TaskStatus.FAILED:
+                            self.failed_files -= 1
+                            self.processed_files -= 1
                     task.status = TaskStatus.PENDING
                     task.stop_event.clear()
                     self.queue.put(task)
@@ -119,6 +143,10 @@ class TaskManager:
     def retry_all_failed(self):
         for task in self.tasks:
             if task.status in [TaskStatus.FAILED, TaskStatus.STOPPED, TaskStatus.TIMEOUT]:
+                with self.lock:
+                    if task.status == TaskStatus.FAILED:
+                        self.failed_files -= 1
+                        self.processed_files -= 1
                 task.status = TaskStatus.PENDING
                 task.stop_event.clear()
                 self.queue.put(task)

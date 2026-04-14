@@ -137,17 +137,55 @@ def convert_with_mistral_ocr(file_path, api_key=MISTRAL_API_KEY, stop_event=None
             except: pass
         return False, str(e)
 
-def handle_failure(file_path):
+def handle_failure(file_path, base_dir=None):
     """
-    Copies failed file to a 'failed' directory in the same folder.
+    Moves failed file to a 'failed' directory under base_dir (or parent).
     """
     try:
-        failed_dir = file_path.parent / "failed"
-        failed_dir.mkdir(exist_ok=True)
-        shutil.copy2(file_path, failed_dir / file_path.name)
+        base_dir = Path(base_dir) if base_dir else file_path.parent
+        failed_dir = base_dir / "failed"
+        
+        if base_dir in file_path.parents:
+            rel_path = file_path.relative_to(base_dir)
+        else:
+            rel_path = file_path.name
+            
+        dest_path = failed_dir / rel_path
+        
+        # Avoid moving same file
+        if dest_path.resolve() == file_path.resolve():
+            return True
+
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(file_path), str(dest_path))
         return True
     except Exception as e:
-        print(f"Failed to copy to failed directory: {e}")
+        print(f"Failed to move to failed directory: {e}")
+        return False
+
+def handle_success(file_path, base_dir=None):
+    """
+    Moves successful file to a 'succeeded' directory, preserving structure.
+    """
+    try:
+        base_dir = Path(base_dir) if base_dir else file_path.parent
+        suc_dir = base_dir / "succeeded"
+        
+        if base_dir in file_path.parents:
+            rel_path = file_path.relative_to(base_dir)
+        else:
+            rel_path = file_path.name
+            
+        dest_path = suc_dir / rel_path
+        
+        if dest_path.resolve() == file_path.resolve():
+            return True
+
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(file_path), str(dest_path))
+        return True
+    except Exception as e:
+        print(f"Failed to move to succeeded directory: {e}")
         return False
 
 def process_file_logic(file_path, api_key=MISTRAL_API_KEY, stop_event=None):
@@ -178,9 +216,10 @@ def process_directory(directory_path, api_key=MISTRAL_API_KEY):
             success, msg = process_file_logic(file_path, api_key)
             if success:
                 print(f"✅ Success: {msg}")
+                handle_success(file_path, base_dir=path)
             else:
                 print(f"❌ Failed: {msg}")
-                handle_failure(file_path)
+                handle_failure(file_path, base_dir=path)
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
@@ -194,7 +233,9 @@ if __name__ == "__main__":
         
     if target_path.is_file():
         success, msg = process_file_logic(target_path)
-        if not success:
-            handle_failure(target_path)
+        if success:
+            handle_success(target_path, base_dir=target_path.parent)
+        else:
+            handle_failure(target_path, base_dir=target_path.parent)
     else:
         process_directory(target_path)

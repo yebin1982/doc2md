@@ -162,6 +162,14 @@ class DocConverterApp(ctk.CTk):
         self.stop_all_btn = ctk.CTkButton(self.actions_frame, text="Stop All Tasks", command=self.task_manager.stop_all, fg_color="#C0392B")
         self.stop_all_btn.pack(side="right", padx=10)
 
+        self.clear_all_btn = ctk.CTkButton(self.actions_frame, text="Clear List", command=self.clear_task_list, fg_color="#8E44AD", hover_color="#9B59B6")
+        self.clear_all_btn.pack(side="right", padx=10)
+
+    def clear_task_list(self):
+        self.task_manager.clear_all()
+        # Force UI refresh to ensure rows are removed
+        self._refresh_ui()
+
     def save_settings_ui(self):
         self.settings["api_key"] = self.api_key_entry.get()
         save_settings(self.settings)

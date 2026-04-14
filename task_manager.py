@@ -97,21 +97,21 @@ class TaskManager:
             elif success:
                 task.status = TaskStatus.SUCCESS
                 task.result_path = result
-                handle_success(task.file_path, base_dir=task.import_root)
+                task.file_path = handle_success(task.file_path, result_path=result, base_dir=task.import_root)
                 with self.lock:
                     self.success_files += 1
                     self.processed_files += 1
             else:
                 task.status = TaskStatus.FAILED
                 task.error_message = result
-                handle_failure(task.file_path, base_dir=task.import_root)
+                task.file_path = handle_failure(task.file_path, base_dir=task.import_root)
                 with self.lock:
                     self.failed_files += 1
                     self.processed_files += 1
         except Exception as e:
             task.status = TaskStatus.FAILED
             task.error_message = str(e)
-            handle_failure(task.file_path, base_dir=task.import_root)
+            task.file_path = handle_failure(task.file_path, base_dir=task.import_root)
             with self.lock:
                 self.failed_files += 1
                 self.processed_files += 1
@@ -176,5 +176,18 @@ class TaskManager:
 
     def clear_successful(self):
         self.tasks = [t for t in self.tasks if t.status != TaskStatus.SUCCESS]
+        if self.update_callback:
+            self.update_callback()
+
+    def clear_all(self):
+        self.stop_all()
+        # Empty the tasks but maintain reference logic might be better if UI relies on it, 
+        # but re-assigning is fine as we clear row_widgets in UI update.
+        with self.lock:
+            self.tasks.clear()
+            self.total_files = 0
+            self.processed_files = 0
+            self.success_files = 0
+            self.failed_files = 0
         if self.update_callback:
             self.update_callback()

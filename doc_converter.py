@@ -140,53 +140,72 @@ def convert_with_mistral_ocr(file_path, api_key=MISTRAL_API_KEY, stop_event=None
 def handle_failure(file_path, base_dir=None):
     """
     Moves failed file to a 'failed' directory under base_dir (or parent).
+    Returns the new path of the file.
     """
     try:
+        file_path = Path(file_path)
         base_dir = Path(base_dir) if base_dir else file_path.parent
-        failed_dir = base_dir / "failed"
         
-        if base_dir in file_path.parents:
-            rel_path = file_path.relative_to(base_dir)
-        else:
-            rel_path = file_path.name
+        if base_dir.name in ["failed", "succeeded", "result"]:
+            base_dir = base_dir.parent
             
-        dest_path = failed_dir / rel_path
+        failed_dir = base_dir / "failed"
+        failed_dir.mkdir(parents=True, exist_ok=True)
         
-        # Avoid moving same file
-        if dest_path.resolve() == file_path.resolve():
-            return True
-
-        dest_path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(file_path), str(dest_path))
-        return True
+        dest_path = failed_dir / file_path.name
+        
+        if dest_path.resolve() != file_path.resolve():
+            if dest_path.exists():
+                try: os.remove(dest_path)
+                except OSError: pass
+            shutil.move(str(file_path), str(dest_path))
+            
+        return dest_path
     except Exception as e:
         print(f"Failed to move to failed directory: {e}")
-        return False
+        return file_path
 
-def handle_success(file_path, base_dir=None):
+def handle_success(file_path, result_path, base_dir=None):
     """
-    Moves successful file to a 'succeeded' directory, preserving structure.
+    Moves successful file to a 'succeeded' directory, directly under base_dir without nesting.
+    And moves result to 'result' directory.
+    Returns the new path of the original file.
     """
     try:
+        file_path = Path(file_path)
         base_dir = Path(base_dir) if base_dir else file_path.parent
-        suc_dir = base_dir / "succeeded"
         
-        if base_dir in file_path.parents:
-            rel_path = file_path.relative_to(base_dir)
-        else:
-            rel_path = file_path.name
+        if base_dir.name in ["failed", "succeeded", "result"]:
+            base_dir = base_dir.parent
             
-        dest_path = suc_dir / rel_path
+        suc_dir = base_dir / "succeeded"
+        result_dir = base_dir / "result"
         
-        if dest_path.resolve() == file_path.resolve():
-            return True
+        suc_dir.mkdir(parents=True, exist_ok=True)
+        result_dir.mkdir(parents=True, exist_ok=True)
+        
+        dest_path = suc_dir / file_path.name
+        
+        if dest_path.resolve() != file_path.resolve():
+            if dest_path.exists():
+                try: os.remove(dest_path)
+                except OSError: pass
+            shutil.move(str(file_path), str(dest_path))
+            
+        if result_path:
+            res_path = Path(result_path)
+            if res_path.exists():
+                dest_res_path = result_dir / res_path.name
+                if dest_res_path.resolve() != res_path.resolve():
+                    if dest_res_path.exists():
+                        try: os.remove(dest_res_path)
+                        except OSError: pass
+                    shutil.move(str(res_path), str(dest_res_path))
 
-        dest_path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(file_path), str(dest_path))
-        return True
+        return dest_path
     except Exception as e:
         print(f"Failed to move to succeeded directory: {e}")
-        return False
+        return file_path
 
 def process_file_logic(file_path, api_key=MISTRAL_API_KEY, stop_event=None):
     """
@@ -216,7 +235,7 @@ def process_directory(directory_path, api_key=MISTRAL_API_KEY):
             success, msg = process_file_logic(file_path, api_key)
             if success:
                 print(f"✅ Success: {msg}")
-                handle_success(file_path, base_dir=path)
+                handle_success(file_path, result_path=msg, base_dir=path)
             else:
                 print(f"❌ Failed: {msg}")
                 handle_failure(file_path, base_dir=path)
@@ -234,7 +253,7 @@ if __name__ == "__main__":
     if target_path.is_file():
         success, msg = process_file_logic(target_path)
         if success:
-            handle_success(target_path, base_dir=target_path.parent)
+            handle_success(target_path, result_path=msg, base_dir=target_path.parent)
         else:
             handle_failure(target_path, base_dir=target_path.parent)
     else:

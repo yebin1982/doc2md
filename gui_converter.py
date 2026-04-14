@@ -2,15 +2,11 @@ import os
 import sys
 import json
 import threading
-import re
-import subprocess
 from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog, messagebox
 import customtkinter as ctk
-from markitdown import MarkItDown
-from mistralai.client import Mistral
-import fitz  # PyMuPDF
+from task_manager import TaskManager, TaskStatus
 
 # Settings persistence
 CONFIG_FILE = "config.json"
@@ -25,116 +21,55 @@ def save_settings(settings):
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(settings, f, indent=4)
 
-# Core Logic Classes (Integrated)
-class ConverterLogic:
-    def __init__(self, api_key, log_callback):
-        self.api_key = api_key
-        self.log_callback = log_callback
-        self.stop_requested = False
-
-    def log(self, message):
-        self.log_callback(message)
-
-    def strip_images(self, markdown_text):
-        pattern = r'!\[.*?\]\(.*?\)'
-        return re.sub(pattern, '', markdown_text)
-
-    def needs_ocr(self, pdf_path):
-        try:
-            doc = fitz.open(str(pdf_path))
-            for page in doc:
-                if page.get_text().strip():
-                    return False
-            return True
-        except Exception as e:
-            self.log(f"Error checking PDF {pdf_path}: {e}")
-            return False
-
-    def convert_with_markitdown(self, file_path):
-        try:
-            md = MarkItDown()
-            result = md.convert(str(file_path))
-            content = self.strip_images(result.text_content)
-            output_path = file_path.with_suffix(".md")
-            with open(output_path, "w", encoding="utf-8") as f:
-                f.write(content)
-            self.log(f"✅ Converted (MarkItDown): {file_path.name}")
-        except Exception as e:
-            self.log(f"❌ Error converting {file_path.name}: {e}")
-
-    def convert_with_mistral_ocr(self, file_path):
-        try:
-            if not self.api_key:
-                self.log("❌ Error: Mistral API Key is missing.")
-                return
-
-            client = Mistral(api_key=self.api_key)
-            self.log(f"☁️ Uploading for OCR: {file_path.name}")
-            
-            with open(file_path, "rb") as f:
-                uploaded_file = client.files.upload(
-                    file={"file_name": file_path.name, "content": f.read()},
-                    purpose="ocr"
-                )
-            
-            signed_url = client.files.get_signed_url(file_id=uploaded_file.id)
-            self.log(f"⏳ Processing OCR: {file_path.name}")
-            
-            ocr_response = client.ocr.process(
-                model="mistral-ocr-latest",
-                document={"type": "document_url", "document_url": signed_url.url}
-            )
-            
-            content = "\n\n".join([page.markdown for page in ocr_response.pages])
-            content = self.strip_images(content)
-            
-            output_path = file_path.with_suffix(".md")
-            with open(output_path, "w", encoding="utf-8") as f:
-                f.write(content)
-            self.log(f"✅ Converted (Mistral OCR): {file_path.name}")
-            
-        except Exception as e:
-            self.log(f"❌ Exception during Mistral OCR for {file_path.name}: {e}")
-
-    def process_item(self, target_path):
-        if target_path.is_file():
-            self._process_single_file(target_path)
-        else:
-            self._process_directory(target_path)
-
-    def _process_single_file(self, file_path):
-        ext = file_path.suffix.lower()
-        # Documentation & PDF
-        if ext == ".pdf":
-            if self.needs_ocr(file_path):
-                self.convert_with_mistral_ocr(file_path)
-            else:
-                self.convert_with_markitdown(file_path)
-        # Standalone Images (using Mistral OCR)
-        elif ext in {".png", ".jpg", ".jpeg", ".bmp", ".tiff", ".webp"}:
-            self.log(f"🖼️ Detected image file, using Mistral OCR...")
-            self.convert_with_mistral_ocr(file_path)
-        # Office, Data, Web, etc.
-        elif ext in {
-            ".docx", ".pptx", ".xlsx", ".html", ".htm", 
-            ".txt", ".csv", ".tsv", ".json", ".xml", ".log"
-        }:
-            self.convert_with_markitdown(file_path)
-
-    def _process_directory(self, directory_path):
-        # Combined set of all supported document/image extensions
-        supported_extensions = {
-            ".pdf", ".docx", ".pptx", ".xlsx", ".html", ".htm",
-            ".txt", ".csv", ".tsv", ".json", ".xml", ".log",
-            ".png", ".jpg", ".jpeg", ".bmp", ".tiff", ".webp"
-        }
+# UI Components for the task list
+class TaskRow(ctk.CTkFrame):
+    def __init__(self, master, task, on_stop, on_retry):
+        super().__init__(master, fg_color="transparent")
+        self.task = task
+        self.on_stop = on_stop
+        self.on_retry = on_retry
         
-        for file_path in Path(directory_path).rglob("*"):
-            if self.stop_requested: break
-            if file_path.is_file():
-                ext = file_path.suffix.lower()
-                if ext in supported_extensions:
-                    self._process_single_file(file_path)
+        self.grid_columnconfigure(0, weight=1)
+        
+        # Icon/Status
+        self.status_label = ctk.CTkLabel(self, text=self._get_status_icon(), width=30)
+        self.status_label.grid(row=0, column=0, sticky="w", padx=(5, 10))
+        
+        # Filename
+        name = self.task.file_path.name
+        if len(name) > 40:
+            name = name[:37] + "..."
+        self.name_label = ctk.CTkLabel(self, text=name, anchor="w")
+        self.name_label.grid(row=0, column=1, sticky="w", padx=5)
+        
+        # Action Button
+        self.action_btn = ctk.CTkButton(self, text="", width=60, height=24)
+        self.action_btn.grid(row=0, column=2, padx=10)
+        
+        self.update_ui()
+
+    def _get_status_icon(self):
+        icons = {
+            TaskStatus.PENDING: "⏳",
+            TaskStatus.RUNNING: "🔄",
+            TaskStatus.SUCCESS: "✅",
+            TaskStatus.FAILED: "❌",
+            TaskStatus.STOPPED: "⏹️",
+            TaskStatus.TIMEOUT: "⏰"
+        }
+        return icons.get(self.task.status, "?")
+
+    def update_ui(self):
+        self.status_label.configure(text=self._get_status_icon())
+        
+        if self.task.status in [TaskStatus.PENDING, TaskStatus.RUNNING]:
+            self.action_btn.configure(text="Stop", fg_color="#E74C3C", hover_color="#C0392B", command=lambda: self.on_stop(self.task.id))
+            self.action_btn.grid()
+        elif self.task.status in [TaskStatus.FAILED, TaskStatus.STOPPED, TaskStatus.TIMEOUT]:
+            self.action_btn.configure(text="Retry", fg_color="#2ECC71", hover_color="#27AE60", command=lambda: self.on_retry(self.task.id))
+            self.action_btn.grid()
+        else:
+            self.action_btn.grid_remove() # Hide for SUCCESS
 
 # GUI Application
 class DocConverterApp(ctk.CTk):
@@ -142,9 +77,11 @@ class DocConverterApp(ctk.CTk):
         super().__init__()
 
         self.settings = load_settings()
+        self.task_manager = TaskManager(update_callback=self.refresh_task_list)
+        self.row_widgets = {} # task_id -> TaskRow
         
         self.title("Doc2MD Portable Converter")
-        self.geometry("800x600")
+        self.geometry("900x700")
         
         # Appearance
         ctk.set_appearance_mode("dark")
@@ -175,32 +112,35 @@ class DocConverterApp(ctk.CTk):
         self.main_frame = ctk.CTkFrame(self, corner_radius=0)
         self.main_frame.grid(row=0, column=1, sticky="nsew", padx=20, pady=20)
         self.main_frame.grid_columnconfigure(0, weight=1)
+        self.main_frame.grid_rowconfigure(2, weight=1)
 
         self.header = ctk.CTkLabel(self.main_frame, text="Document to Markdown Converter", font=ctk.CTkFont(size=24, weight="bold"))
-        self.header.grid(row=0, column=0, pady=20)
+        self.header.grid(row=0, column=0, pady=(10, 20))
 
         # Selection
         self.selection_frame = ctk.CTkFrame(self.main_frame)
         self.selection_frame.grid(row=1, column=0, padx=20, pady=10, sticky="ew")
-        self.selection_frame.grid_columnconfigure(0, weight=1)
+        
+        self.btn_file = ctk.CTkButton(self.selection_frame, text="Add Files", width=120, command=self.browse_file)
+        self.btn_file.pack(side="left", padx=10, pady=10)
 
-        self.path_entry = ctk.CTkEntry(self.selection_frame, placeholder_text="Select a file or directory...")
-        self.path_entry.grid(row=0, column=0, padx=10, pady=10, sticky="ew")
+        self.btn_dir = ctk.CTkButton(self.selection_frame, text="Add Folder", width=120, command=self.browse_folder)
+        self.btn_dir.pack(side="left", padx=10, pady=10)
 
-        self.btn_file = ctk.CTkButton(self.selection_frame, text="Browse File", width=100, command=self.browse_file)
-        self.btn_file.grid(row=0, column=1, padx=5, pady=10)
+        # Task List
+        self.scrollable_frame = ctk.CTkScrollableFrame(self.main_frame, label_text="Conversion Queue")
+        self.scrollable_frame.grid(row=2, column=0, padx=20, pady=10, sticky="nsew")
+        self.scrollable_frame.grid_columnconfigure(0, weight=1)
 
-        self.btn_dir = ctk.CTkButton(self.selection_frame, text="Browse Folder", width=100, command=self.browse_folder)
-        self.btn_dir.grid(row=0, column=2, padx=5, pady=10)
-
-        # Actions
-        self.start_btn = ctk.CTkButton(self.main_frame, text="Start Conversion", height=40, font=ctk.CTkFont(weight="bold"), command=self.start_conversion)
-        self.start_btn.grid(row=2, column=0, padx=20, pady=20, sticky="ew")
-
-        # Terminal Log
-        self.log_text = ctk.CTkTextbox(self.main_frame, height=300)
-        self.log_text.grid(row=3, column=0, padx=20, pady=10, sticky="nsew")
-        self.main_frame.grid_rowconfigure(3, weight=1)
+        # Bulk Actions
+        self.actions_frame = ctk.CTkFrame(self.main_frame, fg_color="transparent")
+        self.actions_frame.grid(row=3, column=0, padx=20, pady=10, sticky="ew")
+        
+        self.retry_all_btn = ctk.CTkButton(self.actions_frame, text="Retry All Failed", command=self.task_manager.retry_all_failed, fg_color="#34495E")
+        self.retry_all_btn.pack(side="left", padx=10)
+        
+        self.stop_all_btn = ctk.CTkButton(self.actions_frame, text="Stop All Tasks", command=self.task_manager.stop_all, fg_color="#C0392B")
+        self.stop_all_btn.pack(side="right", padx=10)
 
     def save_settings_ui(self):
         self.settings["api_key"] = self.api_key_entry.get()
@@ -208,45 +148,56 @@ class DocConverterApp(ctk.CTk):
         messagebox.showinfo("Success", "Settings saved successfully!")
 
     def browse_file(self):
-        filename = filedialog.askopenfilename()
-        if filename:
-            self.path_entry.delete(0, tk.END)
-            self.path_entry.insert(0, filename)
+        filenames = filedialog.askopenfilenames()
+        if filenames:
+            api_key = self.api_key_entry.get()
+            for f in filenames:
+                self.task_manager.add_task(f, api_key)
 
     def browse_folder(self):
         dirname = filedialog.askdirectory()
         if dirname:
-            self.path_entry.delete(0, tk.END)
-            self.path_entry.insert(0, dirname)
+            api_key = self.api_key_entry.get()
+            # Find all supported files
+            supported_extensions = {
+                ".pdf", ".docx", ".pptx", ".xlsx", ".html", ".htm",
+                ".txt", ".csv", ".tsv", ".json", ".xml", ".log",
+                ".png", ".jpg", ".jpeg", ".bmp", ".tiff", ".webp"
+            }
+            for f_path in Path(dirname).rglob("*"):
+                if f_path.is_file() and f_path.suffix.lower() in supported_extensions:
+                    self.task_manager.add_task(f_path, api_key)
 
-    def log(self, message):
-        self.log_text.insert(tk.END, f"{message}\n")
-        self.log_text.see(tk.END)
+    def refresh_task_list(self):
+        # This is called from background thread, so use after()
+        self.after(0, self._refresh_ui)
 
-    def start_conversion(self):
-        path = self.path_entry.get()
-        api_key = self.api_key_entry.get()
+    def _refresh_ui(self):
+        # Remove successful from manager? user requested: "转换成功的文件名从列表中删除"
+        # We handle this by only displaying non-SUCCESS tasks, OR deleting from task_manager
+        # Actually, user says: "列表中仅保留失败的文件名" (implies success disappear).
         
-        if not path:
-            messagebox.showerror("Error", "Please select a file or folder.")
-            return
-        
-        self.log_text.delete("1.0", tk.END)
-        self.log("🚀 Starting process...")
-        
-        thr = threading.Thread(target=self.run_conversion_thread, args=(path, api_key))
-        thr.start()
+        # Filter out success from the manager's list (optional, but keep it for failed)
+        self.task_manager.tasks = [t for t in self.task_manager.tasks if t.status != TaskStatus.SUCCESS]
 
-    def run_conversion_thread(self, path, api_key):
-        self.start_btn.configure(state="disabled")
-        try:
-            logic = ConverterLogic(api_key, self.log)
-            logic.process_item(Path(path))
-            self.log("✨ Done!")
-        except Exception as e:
-            self.log(f"💥 Critical Error: {e}")
-        finally:
-            self.start_btn.configure(state="normal")
+        # Sync widgets
+        existing_ids = set(self.row_widgets.keys())
+        current_ids = {t.id for t in self.task_manager.tasks}
+        
+        # Remove old widgets
+        for tid in existing_ids - current_ids:
+            self.row_widgets[tid].destroy()
+            del self.row_widgets[tid]
+            
+        # Add or update widgets
+        for i, task in enumerate(self.task_manager.tasks):
+            if task.id not in self.row_widgets:
+                row = TaskRow(self.scrollable_frame, task, self.task_manager.stop_task, self.task_manager.retry_task)
+                row.grid(row=i, column=0, padx=5, pady=2, sticky="ew")
+                self.row_widgets[task.id] = row
+            else:
+                self.row_widgets[task.id].update_ui()
+                self.row_widgets[task.id].grid(row=i, column=0, padx=5, pady=2, sticky="ew")
 
 if __name__ == "__main__":
     app = DocConverterApp()
